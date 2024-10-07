@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Leaflet Map with Polygon Highlight and Popup</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <style>
+        #map { height: 600px; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script>
+        // Initialize the map and set the view to a specific location and zoom level
+        var map = L.map('map').setView([-7.56, 110.82], 12);
+
+        // Add a base map layer (OpenStreetMap in this case)
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 18,
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        // URL to the GeoJSON data from Google Earth Engine (replace with actual URL from GEE)
+        var geojsonUrl = 'https://earthengine.googleapis.com/v1/projects/ee-mangata2602/tables/bf9d364130543c09c7aabb09c913e668-26191ec8ff2f43ae9160d671546c659b:getFeatures';  // Replace with actual GeoJSON URL from GEE
+
+        // Define a variable to store the layer of the clicked polygon for highlight purposes
+        var highlightedLayer;
+
+        // Fetch GeoJSON data and add polygons to the map
+        fetch(geojsonUrl)
+            .then(function(response) {
+                return response.json();
+            })
+            .then(function(data) {
+                // Extract only the first 10 features from the GeoJSON data
+                var firstTenFeatures = data.features.slice(200, 210);
+
+                // Create a new GeoJSON object with these 10 features
+                var subsetGeoJson = {
+                    type: 'FeatureCollection',
+                    features: firstTenFeatures
+                };
+
+                // Add the subset GeoJSON data as a layer on the map
+                var geoJsonLayer = L.geoJson(subsetGeoJson, {
+                    // Style the polygons
+                    style: function(feature) {
+                        return {
+                            color: '#3388ff',
+                            weight: 2,
+                            fillOpacity: 0.5
+                        };
+                    },
+                    // Add an event listener for each polygon
+                    onEachFeature: function(feature, layer) {
+                        // Bind popup for each polygon with its properties
+                        var popupContent = "<strong>Properties:</strong><br>";
+                        for (var property in feature.properties) {
+                            popupContent += property + ": " + feature.properties[property] + "<br>";
+                        }
+                        layer.bindPopup(popupContent);
+
+                        // Highlight the clicked polygon
+                        layer.on('click', function() {
+                            if (highlightedLayer) {
+                                // Reset the previous highlighted polygon
+                                geoJsonLayer.resetStyle(highlightedLayer);
+                            }
+                            // Set the new highlighted polygon
+                            highlightedLayer = layer;
+
+                            // Set highlight style for the clicked polygon
+                            layer.setStyle({
+                                color: '#ff7800',
+                                weight: 3,
+                                fillOpacity: 0.7
+                            });
+
+                            // Open the popup for the clicked polygon
+                            layer.openPopup();
+                        });
+                    }
+                });
+
+                // Add the complete GeoJSON layer to the map
+                geoJsonLayer.addTo(map);
+            })
+            .catch(function(error) {
+                console.error('Error fetching GeoJSON:', error);
+            });
+    </script>
+</body>
+</html>

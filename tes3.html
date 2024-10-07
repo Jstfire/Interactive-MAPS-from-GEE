@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Peta Leaflet dengan Highlight Polygon dan Fitur Lanjutan</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css" />
+    <style>
+        #map { height: 100vh; }
+        #loading {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(255, 255, 255, 0.8);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 1.5em;
+            z-index: 9999;
+        }
+        #layerControl {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: white;
+            padding: 10px;
+            z-index: 1000;
+            max-width: 200px;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">Data sedang di-fetch dari GEE, Mohon menunggu terlebih dahulu!</div>
+    <div id="map"></div>
+    <div id="layerControl"></div>
+
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
+
+    <script>
+        var map = L.map('map').setView([-7.56, 110.82], 12);
+        var satelliteLayer = L.tileLayer('https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
+            maxZoom: 18,
+            subdomains: ['mt0', 'mt1', 'mt2', 'mt3']
+        });
+        var defaultLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 18,
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        var isSatellite = false;
+
+        // Toggle between satellite and default map view
+        var toggleViewButton = L.control({ position: 'topright' });
+        toggleViewButton.onAdd = function (map) {
+            var div = L.DomUtil.create('div', 'leaflet-bar');
+            div.innerHTML = '<button id="toggleView">Satellite</button>';
+            div.style.backgroundColor = 'white';
+            div.style.padding = '5px';
+            div.style.cursor = 'pointer';
+            div.onclick = function () {
+                if (isSatellite) {
+                    map.removeLayer(satelliteLayer);
+                    defaultLayer.addTo(map);
+                    div.innerHTML = '<button>Satellite</button>';
+                } else {
+                    map.removeLayer(defaultLayer);
+                    satelliteLayer.addTo(map);
+                    div.innerHTML = '<button>Default</button>';
+                }
+                isSatellite = !isSatellite;
+            };
+            return div;
+        };
+        toggleViewButton.addTo(map);
+
+        // Loading screen logic
+        var loadingScreen = document.getElementById('loading');
+        var geoJsonCache = {};
+        var urls = [
+            {
+                name: 'Layer 1',
+                url: 'https://earthengine.googleapis.com/v1/projects/ee-mangata2602/tables/63b52889de3f1597e416a6e7320d8326-fbb5019747d35a50a182af70973d7a7f:getFeatures'
+            },
+        ];
+
+        var highlightLayer;
+        var layerControl = document.getElementById('layerControl');
+        var geoJsonLayers = {};
+
+        // Fetch and cache GeoJSON data
+        function fetchGeoJson(urlData) {
+            if (geoJsonCache[urlData.name]) {
+                return Promise.resolve(geoJsonCache[urlData.name]);
+            }
+            return fetch(urlData.url).then(function (response) {
+                if (response.status === 401) {
+                    alert('Layer ' + urlData.name + ' tidak dapat dimuat. Hal ini karena token dari URL sudah expired. Mohon diperbarui!');
+                    throw new Error('Token expired');
+                }
+                console.log("tes 1");
+                return response.json();
+            }).then(function (data) {
+                console.log("tes 2");
+                geoJsonCache[urlData.name] = data;
+                console.log(data.features.length + ' features loaded for ' + urlData.name);
+                return data;
+            });
+        }
+
+        // Add layers on highlight
+        function highlightLayerByName(name) {
+            if (highlightLayer) {
+                map.removeLayer(highlightLayer);
+            }
+            if (geoJsonLayers[name]) {
+                highlightLayer = L.geoJson(geoJsonLayers[name], {
+                    style: { color: '#ff7800', weight: 3, fillOpacity: 0.7 }
+                }).addTo(map);
+            }
+        }
+
+        // Initialize the layers and controls
+        function initLayers(data) {
+            loadingScreen.style.display = 'none';
+            data.forEach(function (layerData) {
+                geoJsonLayers[layerData.name] = layerData.data;
+                var layerItem = document.createElement('div');
+                layerItem.innerHTML = '<input type="checkbox" id="' + layerData.name + '">' + layerData.name +
+                    '<button onclick="highlightLayerByName(\'' + layerData.name + '\')">Highlight</button>';
+                layerControl.appendChild(layerItem);
+                document.getElementById(layerData.name).addEventListener('change', function (e) {
+                    if (e.target.checked) {
+                        L.geoJson(layerData.data, {
+                            style: function () { return { color: '#3388ff', weight: 2, fillOpacity: 0.5 }; }
+                        }).addTo(map);
+                    } else {
+                        map.eachLayer(function (layer) {
+                            if (layer.feature) {
+                                map.removeLayer(layer);
+                            }
+                        });
+                    }
+                });
+            });
+        }
+
+        // Fetch all layers and initialize controls
+        Promise.all(urls.map(function (urlData) {
+            return fetchGeoJson(urlData).then(function (data) {
+                return { name: urlData.name, data: data };
+            });
+        })).then(initLayers).catch(function (error) {
+            console.error('Error fetching GeoJSON:', error);
+        });
+
+        // Add search control
+        L.Control.geocoder().addTo(map);
+
+    </script>
+</body>
+</html>

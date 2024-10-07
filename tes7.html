@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Peta Leaflet dengan Layer Control, Legenda, dan Search Bar</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css" />
+    <style>
+        #map { height: 100vh; }
+        #loading {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(255, 255, 255, 0.8);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 1.5em;
+            z-index: 9999;
+        }
+        #progressBar {
+            width: 100%;
+            background-color: #ddd;
+        }
+        #progress {
+            width: 0;
+            height: 30px;
+            background-color: #4caf50;
+            text-align: center;
+            line-height: 30px;
+            color: white;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+        }
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            margin-right: 5px;
+        }
+        .leaflet-control-search {
+            z-index: 1000;
+            background-color: white;
+            padding: 10px;
+            box-shadow: 0px 2px 5px rgba(0,0,0,0.3);
+            border-radius: 5px;
+        }
+        .minimized {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">
+        Data sedang di-fetch dari GEE, Mohon menunggu terlebih dahulu!
+        <div id="progressBar">
+            <div id="progress">0%</div>
+        </div>
+    </div>
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
+
+    <script>
+        // Inisialisasi peta
+        var map = L.map('map').setView([-7.56, 110.82], 12);
+        var satelliteLayer = L.tileLayer('https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
+            maxZoom: 18,
+            subdomains: ['mt0', 'mt1', 'mt2', 'mt3']
+        });
+        var defaultLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 18,
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        var isSatellite = false;
+
+        // Tombol untuk mengubah tampilan peta (satellite / default)
+        var toggleViewButton = L.control({ position: 'bottomright' });
+        toggleViewButton.onAdd = function (map) {
+            var div = L.DomUtil.create('div', 'leaflet-bar');
+            div.innerHTML = '<button id="toggleView">Satellite</button>';
+            div.style.backgroundColor = 'white';
+            div.style.padding = '5px';
+            div.style.cursor = 'pointer';
+            div.onclick = function () {
+                if (isSatellite) {
+                    map.removeLayer(satelliteLayer);
+                    defaultLayer.addTo(map);
+                    div.innerHTML = '<button>Satellite</button>';
+                } else {
+                    map.removeLayer(defaultLayer);
+                    satelliteLayer.addTo(map);
+                    div.innerHTML = '<button>Default</button>';
+                }
+                isSatellite = !isSatellite;
+            };
+            return div;
+        };
+        toggleViewButton.addTo(map);
+
+        // Logic layar loading dengan progress bar
+        var loadingScreen = document.getElementById('loading');
+        var progressBar = document.getElementById('progress');
+        var geoJsonCache = {};
+        
+        //COPAS URL dari GEE di sini
+        var urls = [
+            {
+                name: 'Surakarta',
+                url: 'https://earthengine.googleapis.com/v1/projects/ee-mangata2602/tables/ff747ef78f96e61bf0e36737bcd03b52-38d69cc22841c206ed1d5e079a1c150c:getFeatures'
+            },
+        ];
+
+        var highlightLayer;
+        var geoJsonLayers = {};
+        var progressPercentage = 0;
+        var totalSteps = urls.length * 2;  // Fetch + proses untuk setiap URL
+
+        function updateProgress() {
+            progressPercentage += 1;
+            var percentage = Math.round((progressPercentage / totalSteps) * 100);
+            progressBar.style.width = percentage + '%';
+            progressBar.innerHTML = percentage + '%';
+        }
+
+        // Fetch dan cache data GeoJSON
+        function fetchGeoJson(urlData) {
+            if (geoJsonCache[urlData.name]) {
+                return Promise.resolve(geoJsonCache[urlData.name]);
+            }
+            return fetch(urlData.url).then(function (response) {
+                if (response.status === 401) {
+                    alert('Layer ' + urlData.name + ' tidak dapat dimuat. Token URL sudah expired!');
+                    throw new Error('Token expired');
+                }
+                updateProgress();
+                return response.json();
+            }).then(function (data) {
+                // Validasi apakah data merupakan GeoJSON valid
+                if (!data || !data.type || !data.features) {
+                    console.error('Invalid GeoJSON object:', data);
+                    throw new Error('Invalid GeoJSON object');
+                }
+                geoJsonCache[urlData.name] = data;
+                updateProgress();
+                return data;
+            }).catch(function (error) {
+                console.error('Error fetching or parsing GeoJSON:', error);
+            });
+        }
+
+        // Tambah layer GeoJSON ke peta dan buat layer dengan warna custom
+        function initLayers(data) {
+            var highlightedLayer = null; // Deklarasi variabel untuk layer yang di-highlight
+
+            data.forEach(function (layerData) {
+                var geoJsonLayer = L.geoJson(layerData.data, {
+                    style: function (feature) {
+                        return {
+                            color: feature.properties.color || '#3388ff',
+                            weight: 2,
+                            fillOpacity: 0.5
+                        };
+                    },
+                    onEachFeature: function(feature, layer) {
+                        var popupContent = "<strong>Properties:</strong><br>";
+                        for (var property in feature.properties) {
+                            popupContent += property + ": " + feature.properties[property] + "<br>";
+                        }
+                        layer.bindPopup(popupContent);
+
+                        layer.on('click', function() {
+                            if (highlightedLayer) {
+                                geoJsonLayer.resetStyle(highlightedLayer);
+                            }
+                            highlightedLayer = layer;
+                            layer.setStyle({
+                                weight: 3,
+                                fillOpacity: 0.7
+                            });
+                            layer.openPopup();
+                        });
+                    }
+                });
+                geoJsonLayers[layerData.name] = geoJsonLayer;
+
+                var checkbox = document.getElementById(layerData.name);
+                checkbox.addEventListener('change', function () {
+                    if (checkbox.checked) {
+                        geoJsonLayer.addTo(map);
+                    } else {
+                        map.removeLayer(geoJsonLayer);
+                    }
+                });
+            });
+
+            loadingScreen.style.display = 'none';
+        }
+
+        // Layer Control Toggle
+        var layerControlToggle = L.control({ position: 'topleft' });
+        layerControlToggle.onAdd = function (map) {
+            var div = L.DomUtil.create('div', 'leaflet-bar');
+            div.innerHTML = '<button id="layerControlButton">☰ Layers</button>';
+            div.style.backgroundColor = 'white';
+            div.style.padding = '5px';
+            div.style.cursor = 'pointer';
+
+            div.onclick = function () {
+                var layerControlDiv = document.getElementById('layerControl');
+                layerControlDiv.classList.toggle('minimized');
+            };
+
+            return div;
+        };
+        layerControlToggle.addTo(map);
+
+        // Layer Control dengan Legenda
+        var layerControl = L.control({ position: 'topleft' });
+        layerControl.onAdd = function (map) {
+            var div = L.DomUtil.create('div', 'layer-control-container minimized');
+            div.id = 'layerControl';
+            div.style.backgroundColor = 'white';
+            div.style.padding = '10px';
+            div.style.maxHeight = '400px';
+            div.style.overflowY = 'auto';
+
+            var htmlContent = '<strong>Layers</strong><br>';
+            urls.forEach(function (urlData) {
+                htmlContent += '<div><input type="checkbox" id="' + urlData.name + '">' + urlData.name +
+                    '<button onclick="highlightLayerByName(\'' + urlData.name + '\')">Sorot</button></div>';
+            });
+
+            var legendHtml = '<strong>Legenda Warna</strong><br>';
+            var grades = [
+                [0, 3500000, '#38a850'],
+                [3501000, 4500000, '#66bf50'],
+                [4501000, 7500000, '#8af050'],
+                [7501000, 11500000, '#def250'],
+                [11501000, 12500000, '#ffdd50'],
+                [12501000, 15500000, '#ff9150'],
+                [15501000, 22500000, '#ff4850'],
+                [22501000, 50000000, '#ff4050']
+            ];
+
+            grades.forEach(function (grade) {
+                legendHtml += '<div class="legend-item"><div class="legend-color" style="background-color: ' + grade[2] + ';"></div>' +
+                    grade[0] + ' - ' + grade[1] + '</div>';
+            });
+
+            div.innerHTML = htmlContent + '<br>' + legendHtml;
+
+            return div;
+        };
+        layerControl.addTo(map);
+
+        // Highlight layer dan pindah ke lokasi layer (flyToBounds)
+        function highlightLayerByName(name) {
+            if (geoJsonLayers[name]) {
+                if (highlightLayer) {
+                    map.removeLayer(highlightLayer);
+                }
+                highlightLayer = geoJsonLayers[name];
+                var bounds = highlightLayer.getBounds();
+                map.flyToBounds(bounds); // Memindahkan peta ke lokasi layer
+            }
+        }
+
+        // Search bar dengan suggestion dinamis menggunakan Nominatim API
+        var searchControl = L.control({ position: 'topright' });
+        searchControl.onAdd = function (map) {
+            var div = L.DomUtil.create('div', 'leaflet-control-search');
+            div.innerHTML = `
+                <input type="text" id="searchInput" placeholder="Cari lokasi..." autocomplete="off" />
+                <div id="suggestions"></div>
+            `;
+            return div;
+        };
+        searchControl.addTo(map);
+
+        var searchInput = document.getElementById('searchInput');
+        var suggestionsDiv = document.getElementById('suggestions');
+
+        // Fungsi untuk menampilkan suggestion berdasarkan input pengguna
+        searchInput.addEventListener('input', function() {
+            var query = searchInput.value;
+
+            if (query.length > 2) {
+                fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${query}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        suggestionsDiv.innerHTML = '';
+                        suggestionsDiv.style.display = 'block';
+                        data.forEach(item => {
+                            var suggestionItem = document.createElement('div');
+                            suggestionItem.textContent = item.display_name;
+                            suggestionItem.dataset.lat = item.lat;
+                            suggestionItem.dataset.lon = item.lon;
+                            suggestionItem.addEventListener('click', function() {
+                                var lat = parseFloat(this.dataset.lat);
+                                var lon = parseFloat(this.dataset.lon);
+                                map.setView([lat, lon], 14);
+                                suggestionsDiv.style.display = 'none'; // Hide suggestions after selection
+                            });
+                            suggestionsDiv.appendChild(suggestionItem);
+                        });
+                    });
+            } else {
+                suggestionsDiv.style.display = 'none';
+            }
+        });
+
+        // Menyembunyikan dropdown suggestion jika klik di luar area search
+        document.addEventListener('click', function(e) {
+            if (!searchInput.contains(e.target) && !suggestionsDiv.contains(e.target)) {
+                suggestionsDiv.style.display = 'none';
+            }
+        });
+
+        // Fetch semua GeoJSON dan inisialisasi layer
+        Promise.all(urls.map(fetchGeoJson)).then(function (data) {
+            initLayers(data.map(function (geoData, i) {
+                return { name: urls[i].name, data: geoData };
+            }));
+        });
+
+    </script>
+</body>
+</html>
